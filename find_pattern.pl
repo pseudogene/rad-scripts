@@ -1,6 +1,6 @@
 #!/usr/bin/perl
-# $Revision: 0.4 $
-# $Date: 2014/04/23 $
+# $Revision: 0.6 $
+# $Date: 2015/03/14 $
 # $Id: find_pattern.pl $
 # $Author: Michael Bekaert $
 # $Desc: Find fix allele patterns $
@@ -8,13 +8,24 @@ use strict;
 use warnings;
 use Getopt::Long;
 use List::MoreUtils qw/ uniq /;
+use Data::Dumper;
 
 #----------------------------------------------------------
-our $VERSION = 0.4;
+our $VERSION = 0.6;
 my $shift = 2;    #exported.haplotypes.tsv samples start at the third position!
 
 #----------------------------------------------------------
-my ($verbose, $fix, $min, $ploidy, $min_snp, $max_snp, $grouping, $population, $haplofile, $whitefile, $arff, $genepop, $ade, $fasta, $mapfile, $snpfile) = (0, 0, 0, 2, 1, 2, 0);
+sub reversed
+{
+    my $string = shift;
+    if (defined $string)
+    {
+        $string = reverse(uc $string);
+        $string =~ tr/ABCDGHMNRSTUVWXY/TVGHCDKNYSAABWXR/;
+    }
+    return $string;
+}
+my ($verbose, $fix, $refpop, $min, $ploidy, $min_snp, $max_snp, $grouping, $population, $haplofile, $whitefile, $arff, $genepop, $ade, $fasta, $mapfile, $snpfile, $vcfile) = (0, 0, 0, 0, 2, 1, 2, 0);
 GetOptions(
            'haplotypes=s' => \$haplofile,
            'population=s' => \$population,
@@ -29,10 +40,12 @@ GetOptions(
            'ade:s'        => \$ade,
            'minsnp:i'     => \$min_snp,
            'maxsnp:i'     => \$max_snp,
+           'vcf:s'        => \$vcfile,
+           'ref:i'        => \$refpop,
            'f|fix+'       => \$fix,
            'v|verbose!'   => \$verbose
           );
-if (defined $haplofile && -r $haplofile && defined $population && -r $population && $min >= 0 && $grouping >= 0 && $grouping <= 2)
+if (defined $haplofile && -r $haplofile && defined $population && -r $population && $min >= 0 && $grouping >= 0 && $grouping <= 2 && $refpop >= 0)
 {
     my %whitelist;
     if (defined $whitefile && -r $whitefile && open my $IN, q{<}, $whitefile)
@@ -44,6 +57,18 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
             $whitelist{$tmp[0]} = $tmp[0] if (exists $tmp[0]);
         }
         print {*STDERR} (scalar keys %whitelist), " markers in the whitelist!\n" if ($verbose);
+        close $IN;
+    }
+    my %vcf;
+    if (defined $vcfile && -r $vcfile && open my $IN, q{<}, $vcfile)
+    {
+        while (<$IN>)
+        {
+            chomp;
+            my @tmp = split m/\t/x;
+            @{$vcf{$tmp[0]}} = ($tmp[2], $tmp[3], $tmp[1]) if (scalar @tmp >= 3 && substr($tmp[0], 0, 1) ne '#');
+        }
+        print {*STDERR} (scalar keys %vcf), " chromosome in the map!\n" if ($verbose);
         close $IN;
     }
     my (%physmap, %snpsmap);
@@ -86,10 +111,9 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
             close $IN;
         }
     }
-    my (%pop, %group);
+    my (%pop, %group, %class);
     if (open my $IN, q{<}, $population)
     {
-        my %class;
         while (<$IN>)
         {
             chomp;
@@ -112,6 +136,7 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
             foreach my $item (sort keys %class) { print {*STDERR} 'Group ', $item, ' [', $class{$item}, '] have ', $group{$class{$item}}, ' member', ($group{$class{$item}} > 1 ? q{s} : q{}), "\n"; }
         }
     }
+    $refpop = 0 if (!exists $group{$refpop});
     $min = int((scalar keys %pop) * 0.75) if ($min == 0 || $min > scalar keys %pop);
     print {*STDERR} 'Threshold fixed at ', $min, "\n" if ($verbose);
     if (%pop && %group)
@@ -149,7 +174,7 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                 $index++;
                 if ($index > $shift) { push @ind, $item; }
             }
-            if (scalar @ind == scalar keys %pop)
+            #if (scalar @ind == scalar keys %pop)
             {
                 my (@header, @good_markers);
                 my (%line_arff, %line_genepop, %line_ade, %line_fasta, %header_arff, %header_good);
@@ -402,22 +427,96 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                 }
                 if (!(defined $arff || defined $genepop || defined $fasta || defined $ade) && @header && scalar @header > 0)
                 {
-                    print {*STDOUT} 'Marker_SNP';
-                    foreach my $pop (sort keys %group) { print {*STDOUT} "\tAllele_", $pop; }
-                    print {*STDOUT} "\n";
-                    foreach my $item (@header)
+                    if ($fix == 2 && scalar keys %vcf > 0)
                     {
-                        if (exists $header_good{$item})
+                        print {*STDOUT} "##fileformat=VCFv4.1\n##handle=\n##batch=\n##reference=\n";
+                        print {*STDOUT}
+                          '##INFO=<ID=VRT,Number=1,Type=Integer,Description="Variation type, 1 - SNV: single nucleotide variation, 2 - DIV: deletion/insertion variation, 3 - HETEROZYGOUS: variable, but undefined at nucleotide level, 4 - STR: short tandem repeat (microsatellite) variation, 5 - NAMED: insertion/deletion variation of named repetitive element, 6 - NO VARIATON: sequence scanned for variation, but none observed, 7 - MIXED: cluster contains submissions from 2 or more allelic classes, 8 - MNV: multiple nucleotide variation with alleles of common length greater than 1, 9 – Exception">',
+                          "\n";
+                        print {*STDOUT} '##INFO=<ID=FLANK-5,Number=1,Type=String,Description="5\' flanking sequence surrounding the variation.">', "\n";
+                        print {*STDOUT} '##INFO=<ID=FLANK-3,Number=1,Type=String,Description="3\' flanking sequence surrounding the variation.">', "\n";
+                        print {*STDOUT} '##INFO=<ID=CMT=1,Number=.,Type=String,Description="Comment.">',                                           "\n";
+                        print {*STDOUT} "##FORMAT=<ID=NA,Number=1,Type=Integer,Description=\"Number of alleles for the population.\">\n";
+                        print {*STDOUT} "##FORMAT=<ID=AC,Number=.,Type=Integer,Description=\"Allele count for each alternate allele.\">\n";
+                        foreach my $pop (sort keys %class) { print {*STDOUT} "##population_id=", $pop, "\n"; }
+                        print {*STDOUT} "#CHROM    	POS    	ID    	REF    	ALT    	QUAL	FILTER	INFO	FORMAT";
+                        foreach my $pop (sort keys %class) { print {*STDOUT} "\t", $pop; }
+                        print {*STDOUT} "\n";
+
+                        foreach my $item (@header)
                         {
-                            my $id = substr $item, 0, -2;
-                            print {*STDOUT} $item;
-                            foreach my $pop (sort keys %group) { print {*STDOUT} "\t", (exists $header_good{$item}{$pop} ? q{\{} . join(q{,}, uniq(sort(@{$header_good{$item}{$pop}}))) . q{\}} : '{NN}'); }
-                            if (%snpsmap && exists $snpsmap{$item} && %physmap && exists $physmap{$id})
+                            if (exists $header_good{$item})
                             {
-                                print {*STDOUT} "\t", substr($physmap{$id}[0], 0, $snpsmap{$item}[0]), q{[}, $snpsmap{$item}[1], q{]}, substr($physmap{$id}[0], $snpsmap{$item}[0] + 1);
-                                print {*STDOUT} "\t", $physmap{$id}[1], "\t", $physmap{$id}[2], "\t", $physmap{$id}[3] if (exists $physmap{$id}[1]);
+                                my $id = substr $item, 0, -2;
+                                if (%snpsmap && exists $snpsmap{$item} && %physmap && exists $physmap{$id} && exists $vcf{$physmap{$id}[1]})
+                                {
+                                    if (exists $header_good{$item}{$refpop})
+                                    {
+                                        my $ref_allele = substr(join(q{}, uniq(sort(@{$header_good{$item}{$refpop}}))), 0, 1);
+
+                                        #my $ref_allele;
+                                        #if (exists $header_good{$item}{$refpop}) {
+                                        #                                    $ref_allele=substr(join(q{},uniq(sort(@{$header_good{$item}{$refpop}}))),0,1);
+                                        #} else {
+                                        # print {*STDERR} "Ignore '$item' as the reference allele is unknown!\n";
+                                        #                                   $ref_allele=substr(join(q{},uniq(sort(@{$header_good{$item}{$refpop+1}}))),0,1);
+                                        #}
+                                        my $alt_allele = (substr($snpsmap{$item}[1], 0, 1) ne $ref_allele ? substr($snpsmap{$item}[1], 0, 1) : substr($snpsmap{$item}[1], 1, 1));
+                                        if ($physmap{$id}[3] eq '+')
+                                        {
+                                            print {*STDOUT} $vcf{$physmap{$id}[1]}[2], "\t", ($physmap{$id}[2] + $snpsmap{$item}[0] + $vcf{$physmap{$id}[1]}[1]), "\t", $vcf{$physmap{$id}[1]}[0], ':g.',
+                                              ($physmap{$id}[2] + $snpsmap{$item}[0] + $vcf{$physmap{$id}[1]}[1]), $ref_allele, q{>}, $alt_allele, "\t";
+                                            print {*STDOUT} $ref_allele, "\t", $alt_allele, "\t.\tPASS\tVRT=1;FLANK-5=", substr($physmap{$id}[0], 0, $snpsmap{$item}[0]), ";FLANK-3=", substr($physmap{$id}[0], $snpsmap{$item}[0] + 1);
+                                        }
+                                        else
+                                        {
+                                            print {*STDOUT} $vcf{$physmap{$id}[1]}[2], "\t", ($physmap{$id}[2] - $snpsmap{$item}[0] + $vcf{$physmap{$id}[1]}[1]), "\t", $vcf{$physmap{$id}[1]}[0], ':g.',
+                                              ($physmap{$id}[2] - $snpsmap{$item}[0] + $vcf{$physmap{$id}[1]}[1]), reversed($ref_allele), q{>}, reversed($alt_allele), "\t";
+                                            print {*STDOUT} reversed($ref_allele), "\t", reversed($alt_allele), "\t.\tPASS\tVRT=1;FLANK-5=", reversed(substr($physmap{$id}[0], $snpsmap{$item}[0] + 1)), ";FLANK-3=",
+                                              reversed(substr($physmap{$id}[0], 0, $snpsmap{$item}[0]));
+                                        }
+                                        print {*STDOUT} ';CMT="', $item, "\"\tNA:AC";
+                                        foreach my $pop (sort keys %class)
+                                        {
+                                            print {*STDOUT} "\t";
+                                            if (exists $header_good{$item}{$class{$pop}})
+                                            {
+                                                print {*STDOUT} (scalar @{$header_good{$item}{$class{$pop}}});
+                                                print {*STDOUT} q{:};
+                                                if (substr($header_good{$item}{$class{$pop}}[0], 0, 1) ne $ref_allele) { print {*STDOUT} (scalar @{$header_good{$item}{$class{$pop}}}); }
+                                                else                                                                   { print {*STDOUT} '0'; }
+                                            }
+                                            else { print {*STDOUT} "0:0"; }
+                                        }
+
+                                        #                                    print {*STDOUT} "\tXXX" if (!exists $header_good{$item}{$refpop});
+                                        print {*STDOUT} "\n";
+                                    }
+                                    else { print {*STDERR} "Ignore '$item' as the reference allele is unknown!\n"; }
+                                }
+                                else { print {*STDERR} "Skip '$item' as the chromosome is unknown!\n"; }
                             }
-                            print {*STDOUT} "\n";
+                        }
+                    }
+                    else
+                    {
+                        print {*STDOUT} 'Marker_SNP';
+                        foreach my $pop (sort keys %group) { print {*STDOUT} "\tAllele_", $pop; }
+                        print {*STDOUT} "\n";
+                        foreach my $item (@header)
+                        {
+                            if (exists $header_good{$item})
+                            {
+                                my $id = substr $item, 0, -2;
+                                print {*STDOUT} $item;
+                                foreach my $pop (sort keys %group) { print {*STDOUT} "\t", (exists $header_good{$item}{$pop} ? q{\{} . join(q{,}, uniq(sort(@{$header_good{$item}{$pop}}))) . q{\}} : '{NN}'); }
+                                if (%snpsmap && exists $snpsmap{$item} && %physmap && exists $physmap{$id})
+                                {
+                                    print {*STDOUT} "\t", substr($physmap{$id}[0], 0, $snpsmap{$item}[0]), q{[}, $snpsmap{$item}[1], q{]}, substr($physmap{$id}[0], $snpsmap{$item}[0] + 1);
+                                    print {*STDOUT} "\t", $physmap{$id}[1], "\t", $physmap{$id}[2], "\t", $physmap{$id}[3] if (exists $physmap{$id}[1]);
+                                }
+                                print {*STDOUT} "\n";
+                            }
                         }
                     }
                 }
@@ -433,9 +532,5 @@ else
       "Usage: $0 --haplotypes <batch_<num>.haplotypes.tsv> --population <popmap.txt>\nDescription: Test for diagnostic alleles or patterns between populations\n\n--haplotypes <file>\n    Raw haplotype file, automaticaly generated by Stacks, and called\n    batch_<num>.haplotypes.tsv.\n\n--population <file>\n    Population file used by Stacks.\n\n--tag <file>\n    batch_<num>.catalog.tags.tsv, required for physical mapping and marker sequences.\n\n--snp <file>\n    batch_<num>.catalog.snps.tsv, required for marker sequences.\n\n--whitelist <file>\n    Text file with the list of marker to only consider.\n\n--min <integer>\n    Minimum number of sample sharing alleles. [default 75%]\n\n--group <file>\n    Grouping [default 0].\n      0 between individuals [all];\n      1 between populations [species];\n      2 between groups of population [group].\n\n--arff <file>\n    Output as an ARFF file format.\n\n--fasta <file>\n    Output as a FASTA file format (SNP only).\n\n--genepop <file>\n    Output as an genepop file format.\n\n--minsnp <integer>\n    Minimum number of SNP. [default 1]\n\n--maxsnp <integer>\n    Maximum number of SNP. [default 2]\n\n--fix\n    Force fixed alleles only.\n\n--fix --fix\n    Force ONE fixed fallele only.\n\n--verbose\n    Becomes very chatty.\n\n";
 }
 
-#grouping
-#old        new
-#all        0        done!
-#species    1        done!
-#group      2        done!
 #./find_pattern.pl --haplotypes batch_2.haplotypes.tsv --population farmed.txt -v --group 2 -d
+#./find_pattern.pl --haplotypes tilapia.all.ref/batch_4.haplotypes.tsv --population population.named.txt -v --group 1 -maxsnp 2 -fix -fix --tag tilapia.all.ref/batch_4.catalog.tags.tsv --snp tilapia.all.ref/batch_4.catalog.snps.tsv --vcf=vcf_map.txt --ref=0

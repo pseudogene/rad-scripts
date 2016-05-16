@@ -30,6 +30,16 @@ gunzip Myotis_lucifugus.Myoluc2.0.dna.toplevel.fa.gz
 ./ddRAD_enzyme.pl -i Myotis_lucifugus.Myoluc2.0.dna.toplevel.fa -2 SbfI -1 SphI -rad > rad.SbfI_SphI.txt
 ```
 
+* `find_pattern.pl`: Test for diagnostic alleles or patterns between populations using raw STACKS RAD outputs
+
+```
+#extented help (PLEASE READ IT)
+./find_pattern.pl
+
+#Simple test
+./find_pattern.pl --haplotypes batch_1.haplotypes.tsv --population pop.txt -v --group 2 -d
+
+```
 
 ##Issues
 
