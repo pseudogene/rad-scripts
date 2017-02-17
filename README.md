@@ -1,20 +1,20 @@
-#rad-scripts
+# rad-scripts
 
 We foster the openness, integrity, and reproducibility of scientific research.
 
 Various scripts and tools to process RAD-sequences
 
-##Associated publication
+## Associated publication
 
 > under-submission
 
-##How to use this repository?
+## How to use this repository?
 
 This repository host, various scripts and tools to process RAD-sequences. Feel free to adapt the scripts and tools, but remember to cite their authors!
 
 To look at our scripts, **browse** through this repository. If you want to use some of the scripts, you will need to **clone** this repository. If you want to use our scripts for our own research, **fork** this repository and **cite** the authors.
 
-##Available scripts (so far)
+## Available scripts (so far)
 
 * `ddRAD_enzyme.pl`: A very simple bioperl script predicting the distribution of the fragment length after a ddRAD.
 
@@ -41,17 +41,29 @@ gunzip Myotis_lucifugus.Myoluc2.0.dna.toplevel.fa.gz
 
 ```
 
-##Issues
+
+* `needle_matrix.pl`: use EMBOSS/needle aligner to perform all pairwise comparison and report similarity or identity values.
+
+```
+#extented help (PLEASE READ IT)
+./needle_matrix.pl
+
+#Simple test
+./needle_matrix.pl --in sequences_AA.fa --db sequences_AA.fa -s >results.tsv
+
+```
+
+## Issues
 
 If you have any problems with or questions about the scripts, please contact us through a [GitHub issue](https://github.com/pseudogene/rad-scripts/issues).
 
 
-##Contributing
+## Contributing
 
 You are invited to contribute new features, fixes, or updates, large or small; we are always thrilled to receive pull requests, and do our best to process them as fast as we can.
 
 
-##License and distribution
+## License and distribution
 
 
 This code is distributed under the GNU GPL license v3. The documentation, raw data and work are licensed under a Creative Commons Attribution-ShareAlike 4.0 International License.​
