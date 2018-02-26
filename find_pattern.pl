@@ -1,6 +1,6 @@
 #!/usr/bin/perl
-# $Revision: 0.6 $
-# $Date: 2015/03/14 $
+# $Revision: 0.9 $
+# $Date: 2018/02/26 $
 # $Id: find_pattern.pl $
 # $Author: Michael Bekaert $
 # $Desc: Find fix allele patterns $
@@ -8,10 +8,9 @@ use strict;
 use warnings;
 use Getopt::Long;
 use List::MoreUtils qw/ uniq /;
-use Data::Dumper;
 
 #----------------------------------------------------------
-our $VERSION = 0.6;
+our $VERSION = 0.9;
 my $shift = 2;    #exported.haplotypes.tsv samples start at the third position!
 
 #----------------------------------------------------------
@@ -25,27 +24,28 @@ sub reversed
     }
     return $string;
 }
-my ($verbose, $fix, $refpop, $min, $ploidy, $min_snp, $max_snp, $grouping, $population, $haplofile, $whitefile, $arff, $genepop, $ade, $fasta, $mapfile, $snpfile, $vcfile) = (0, 0, 0, 0, 2, 1, 2, 0);
+my ($verbose, $fix, $noNs, $refpop, $minrate, $ploidy, $min_snp, $max_snp, $grouping, $arff, $genepop, $ade, $fasta, $population, $haplofile, $whitefile, $mapfile, $snpfile, $vcfile) = (0, 0, 0, 0, 0.75, 2, 1, 2, 0, 0, 0, 0, 0);
 GetOptions(
            'haplotypes=s' => \$haplofile,
            'population=s' => \$population,
            'tag:s'        => \$mapfile,
            'snp:s'        => \$snpfile,
            'whitelist:s'  => \$whitefile,
-           'min:i'        => \$min,
+           'min:f'        => \$minrate,
            'group:i'      => \$grouping,
-           'arff:s'       => \$arff,
-           'fasta:s'      => \$fasta,
-           'genepop:s'    => \$genepop,
-           'ade:s'        => \$ade,
+           'arff!'        => \$arff,
+           'fasta!'       => \$fasta,
+           'genepop!'     => \$genepop,
+           'ade!'         => \$ade,
            'minsnp:i'     => \$min_snp,
            'maxsnp:i'     => \$max_snp,
            'vcf:s'        => \$vcfile,
            'ref:i'        => \$refpop,
            'f|fix+'       => \$fix,
+           'n|noN!'       => \$noNs,
            'v|verbose!'   => \$verbose
           );
-if (defined $haplofile && -r $haplofile && defined $population && -r $population && $min >= 0 && $grouping >= 0 && $grouping <= 2 && $refpop >= 0)
+if (defined $haplofile && -r $haplofile && defined $population && -r $population && $minrate >= 0 && $minrate <= 1 && $grouping >= 0 && $grouping <= 2 && $refpop >= 0)
 {
     my %whitelist;
     if (defined $whitefile && -r $whitefile && open my $IN, q{<}, $whitefile)
@@ -97,10 +97,10 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
             {
                 chomp;
                 my @tmp = split m/\t/x;
-                if (scalar @tmp >= 6 && (!%whitelist || exists $whitelist{$tmp[2]}))
+                if (scalar @tmp >= 7 && (!%whitelist || exists $whitelist{$tmp[2]}))
                 {
                     my @seq;
-                    for my $i (5 .. (scalar @tmp - 1)) { push @seq, $tmp[$i] if (length($tmp[$i]) > 0); }
+                    for my $i (6 .. (scalar @tmp - 1)) { push @seq, $tmp[$i] if (length($tmp[$i]) > 0 && $tmp[$i] ne q{-}); }
                     if (!defined $last || $last != $tmp[2]) { $nb = 0; }
                     else                                    { $nb++; }
                     @{$snpsmap{$tmp[2] . q{_} . chr(65 + $nb)}} = ($tmp[3], join(q{}, sort @seq));
@@ -137,8 +137,8 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
         }
     }
     $refpop = 0 if (!exists $group{$refpop});
-    $min = int((scalar keys %pop) * 0.75) if ($min == 0 || $min > scalar keys %pop);
-    print {*STDERR} 'Threshold fixed at ', $min, "\n" if ($verbose);
+    my $min = int((scalar keys %pop) * $minrate);
+    print {*STDERR} 'Threshold fixed at ', $minrate, ' (', $min, ")\n" if ($verbose);
     if (%pop && %group)
     {
         my @traits;
@@ -174,10 +174,11 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                 $index++;
                 if ($index > $shift) { push @ind, $item; }
             }
+
             #if (scalar @ind == scalar keys %pop)
             {
                 my (@header, @good_markers);
-                my (%line_arff, %line_genepop, %line_ade, %line_fasta, %header_arff, %header_good);
+                my (%line_arff, %line_genepop, %line_ade, %line_fasta, %header_arff, %header_good, %refgrp);
                 while (<$IN>)
                 {
                     $nb_all++;
@@ -208,10 +209,13 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                         my %all_alleles;
                         if ($index == scalar @data)
                         {
+                            my %pop_count;
                             foreach my $item (keys %pop)
                             {
                                 if (exists $alleles{$item})
                                 {
+                                    if   (exists $pop_count{$pop{$item}}) { $pop_count{$pop{$item}}++ }
+                                    else                                  { $pop_count{$pop{$item}} = 1; }
                                     foreach my $subitem (@{$alleles{$item}}) { push @{$all_alleles{$item}}, join(q{}, uniq(sort @{$subitem})); }
                                 }
                                 else
@@ -220,6 +224,7 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                                 }
                             }
                             undef %alleles;
+                            foreach my $item (keys %group) { undef %all_alleles unless ((!exists $pop_count{$item} && $minrate == 0) || (exists $pop_count{$item} && $pop_count{$item} / $group{$item} >= $minrate)); }
                         }
                         if (%all_alleles && $num_snp >= $min_snp)
                         {
@@ -256,6 +261,7 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                                                 if (length($ref) == $ploidy)
                                                 {
                                                     my (%tmpline_arff, %tmpline_ade, %tmpline_genepop, %tmpline_fasta);
+                                                    my $hasN = 0;
                                                     my $flag = $trait->{$refs};
                                                     foreach my $item (keys %pop)
                                                     {
@@ -265,21 +271,21 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                                                             $tmp = $tmp x $ploidy if (length($tmp) == 1);
                                                             if (length($tmp) == $ploidy)
                                                             {
-                                                                if ($tmp eq 'NN' || ($flag eq $trait->{$item} && $ref eq $tmp) || ($flag ne $trait->{$item} && $ref ne $tmp)) { $true++; }
-                                                                if (defined $arff)
+                                                                if ($tmp eq 'N' x $ploidy || ($flag eq $trait->{$item} && $ref eq $tmp) || ($flag ne $trait->{$item} && $ref ne $tmp)) { $true++; }
+                                                                if ($arff)
                                                                 {
                                                                     my $tmp2 = $tmp;
                                                                     $tmp2 =~ s/N+/\?/g;
                                                                     push @{$tmpline_arff{$item}}, $tmp2;
                                                                     push @{$header_arff{$data[0] . q{_} . chr(65 + $i)}}, $tmp2 if ($tmp2 ne '?');
                                                                 }
-                                                                if (defined $ade)
+                                                                if ($ade)
                                                                 {
                                                                     my $tmp2 = $tmp;
                                                                     $tmp2 =~ tr/ATCGN/1234 /;
                                                                     push @{$tmpline_ade{$item}}, $tmp2;
                                                                 }
-                                                                if (defined $genepop)
+                                                                if ($genepop)
                                                                 {
                                                                     my $tmp2 = $tmp;
                                                                     $tmp2 =~ s/A/01/g;
@@ -289,8 +295,8 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                                                                     $tmp2 =~ s/N/00/g;
                                                                     push @{$tmpline_genepop{$item}}, $tmp2;
                                                                 }
-                                                                if (defined $fasta) { push @{$tmpline_fasta{$item}}, $tmp; }
-                                                                if (!(defined $arff || defined $genepop || defined $fasta || defined $ade))
+                                                                if ($fasta) { push @{$tmpline_fasta{$item}}, $tmp; }
+                                                                if (!($arff || $genepop || $fasta || $ade))
                                                                 {
                                                                     my $tmp2 = $tmp;
                                                                     $tmp2 =~ s/N+/\?/g;
@@ -299,24 +305,29 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                                                             }
                                                         }
                                                     }
-                                                    if ($true != (scalar keys %pop))
+                                                    if ($noNs)
+                                                    {
+                                                        foreach my $pop (sort keys %group) { $hasN++ if (!exists $header_good{$data[0] . q{_} . chr(65 + $i)}{$pop}); }
+                                                    }
+                                                    if ($hasN || $true != (scalar keys %pop))
                                                     {
                                                         #remove header
-                                                        if (defined $arff) { delete $header_arff{$data[0] . q{_} . chr(65 + $i)}; }
-                                                        if (!(defined $arff || defined $genepop || defined $fasta || defined $ade)) { delete $header_good{$data[0] . q{_} . chr(65 + $i)}; }
+                                                        if ($arff) { delete $header_arff{$data[0] . q{_} . chr(65 + $i)}; }
+                                                        if (!($arff || $genepop || $fasta || $ade)) { delete $header_good{$data[0] . q{_} . chr(65 + $i)}; }
                                                     }
                                                     else
                                                     {
-                                                        if ((defined $arff || defined $genepop || defined $fasta || defined $ade))
+                                                        if (($arff || $genepop || $fasta || $ade))
                                                         {
                                                             foreach my $item (keys %pop)
                                                             {
-                                                                if (defined $arff) { push @{$line_arff{$item}}, @{$tmpline_arff{$item}}; }
-                                                                if (defined $ade)  { push @{$line_ade{$item}},  @{$tmpline_ade{$item}}; }
-                                                                if (defined $genepop) { push @{$line_genepop{$pop{$item}}{$item}}, @{$tmpline_genepop{$item}}; }
-                                                                if (defined $fasta) { push @{$line_fasta{$item}}, @{$tmpline_fasta{$item}}; }
+                                                                if ($arff) { push @{$line_arff{$item}}, @{$tmpline_arff{$item}}; }
+                                                                if ($ade)  { push @{$line_ade{$item}},  @{$tmpline_ade{$item}}; }
+                                                                if ($genepop) { push @{$line_genepop{$pop{$item}}{$item}}, @{$tmpline_genepop{$item}}; }
+                                                                if ($fasta) { push @{$line_fasta{$item}}, @{$tmpline_fasta{$item}}; }
                                                             }
                                                         }
+                                                        $refgrp{$data[0] . q{_} . chr(65 + $i)} = $flag;
                                                         push @header,       $data[0] . q{_} . chr(65 + $i);
                                                         push @good_markers, $data[0];
                                                         last;
@@ -339,20 +350,20 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                                                 {
                                                     push @header, $data[0] . q{_} . chr(65 + $i) if ($i != $lasti);
                                                     push @good_markers, $data[0] if ($i != $lasti);
-                                                    if (defined $arff)
+                                                    if ($arff)
                                                     {
                                                         my $tmp2 = $tmp;
                                                         $tmp2 =~ s/N+/\?/g;
                                                         push @{$line_arff{$item}}, $tmp2;
                                                         push @{$header_arff{$data[0] . q{_} . chr(65 + $i)}}, $tmp2 if ($tmp2 ne '?');
                                                     }
-                                                    if (defined $ade)
+                                                    if ($ade)
                                                     {
                                                         my $tmp2 = $tmp;
                                                         $tmp2 =~ tr/ATCGN/1234 /;
                                                         push @{$line_ade{$item}}, $tmp2;
                                                     }
-                                                    if (defined $genepop)
+                                                    if ( $genepop)
                                                     {
                                                         my $tmp2 = $tmp;
                                                         $tmp2 =~ s/A/01/g;
@@ -362,8 +373,8 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                                                         $tmp2 =~ s/N/00/g;
                                                         push @{$line_genepop{$pop{$item}}{$item}}, $tmp2;
                                                     }
-                                                    if (defined $fasta) { push @{$line_fasta{$item}}, $tmp; }
-                                                    if (!(defined $arff || defined $genepop || defined $fasta || defined $ade))
+                                                    if ($fasta) { push @{$line_fasta{$item}}, $tmp; }
+                                                    if (!($arff || $genepop || $fasta || $ade))
                                                     {
                                                         my $tmp2 = $tmp;
                                                         $tmp2 =~ s/N+/\?/g;
@@ -388,14 +399,14 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                 $nb_good = scalar uniq sort @good_markers;
                 undef @good_markers;
                 $nb_good_snp = scalar @header;
-                if (defined $arff && @header && scalar @header > 0)
+                if ($arff && @header && scalar @header > 0)
                 {
                     print {*STDOUT} "\@RELATION $haplofile\n\n\@ATTRIBUTE Sample STRING\n\@ATTRIBUTE Population {", join(q{,}, uniq(sort(keys %group))), "}\n";
                     foreach my $item (@header) { print {*STDOUT} '@ATTRIBUTE ', $item, ' {', join(q{,}, uniq(sort(@{$header_arff{$item}}))), "}\n"; }
                     print {*STDOUT} "\n\@DATA\n";
                     foreach my $item (keys %line_arff) { print {*STDOUT} $item, q{,}, $pop{$item}, q{,}, join(q{,}, @{$line_arff{$item}}), "\n"; }
                 }
-                if (defined $ade && @header && scalar @header > 0)
+                if ($ade && @header && scalar @header > 0)
                 {
                     print {*STDOUT} "Samples\t", join("\t", @header), "\n";
                     my $counter = 0;    ##
@@ -411,7 +422,7 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                     foreach my $item (keys %line_ade) { push @tmp, $pop{$item}; }
                     print {*STDERR} "R/adegenet population vector:\n pop <- c('", join('\',\'', @tmp), "');\n";
                 }
-                if (defined $genepop && @header && scalar @header > 0)
+                if ($genepop && @header && scalar @header > 0)
                 {
                     print {*STDOUT} "Find_pattern.pl version $VERSION; Genepop 4.+\n";
                     print {*STDOUT} join(q{,}, @header), "\n";
@@ -421,11 +432,11 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                         foreach my $item (keys %{$line_genepop{$pop}}) { print {*STDOUT} $item, ",\t", join("\t", @{$line_genepop{$pop}{$item}}), "\n"; }
                     }
                 }
-                if (defined $fasta && @header && scalar @header > 0)
+                if ($fasta && @header && scalar @header > 0)
                 {
                     foreach my $item (keys %line_fasta) { print {*STDOUT} q{>}, $item, ' [', $pop{$item}, "]\n", join(q{}, @{$line_fasta{$item}}), "\n"; }
                 }
-                if (!(defined $arff || defined $genepop || defined $fasta || defined $ade) && @header && scalar @header > 0)
+                if (!($arff || $genepop || $fasta || $ade) && @header && scalar @header > 0)
                 {
                     if ($fix == 2 && scalar keys %vcf > 0)
                     {
@@ -489,7 +500,7 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                                             else { print {*STDOUT} "0:0"; }
                                         }
 
-                                        #                                    print {*STDOUT} "\tXXX" if (!exists $header_good{$item}{$refpop});
+                                        #print {*STDOUT} "\tXXX" if (!exists $header_good{$item}{$refpop});
                                         print {*STDOUT} "\n";
                                     }
                                     else { print {*STDERR} "Ignore '$item' as the reference allele is unknown!\n"; }
@@ -500,7 +511,7 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                     }
                     else
                     {
-                        print {*STDOUT} 'Marker_SNP';
+                        print {*STDOUT} 'Marker_SNP', ($grouping == 1 && %refgrp ? "\tDiag_Allele" : q{});
                         foreach my $pop (sort keys %group) { print {*STDOUT} "\tAllele_", $pop; }
                         print {*STDOUT} "\n";
                         foreach my $item (@header)
@@ -508,12 +519,12 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
                             if (exists $header_good{$item})
                             {
                                 my $id = substr $item, 0, -2;
-                                print {*STDOUT} $item;
+                                print {*STDOUT} $item, ($grouping == 1 && exists $refgrp{$item} ? "\t" . $refgrp{$item} : q{});
                                 foreach my $pop (sort keys %group) { print {*STDOUT} "\t", (exists $header_good{$item}{$pop} ? q{\{} . join(q{,}, uniq(sort(@{$header_good{$item}{$pop}}))) . q{\}} : '{NN}'); }
                                 if (%snpsmap && exists $snpsmap{$item} && %physmap && exists $physmap{$id})
                                 {
                                     print {*STDOUT} "\t", substr($physmap{$id}[0], 0, $snpsmap{$item}[0]), q{[}, $snpsmap{$item}[1], q{]}, substr($physmap{$id}[0], $snpsmap{$item}[0] + 1);
-                                    print {*STDOUT} "\t", $physmap{$id}[1], "\t", $physmap{$id}[2], "\t", $physmap{$id}[3] if (exists $physmap{$id}[1]);
+                                    print {*STDOUT} "\t", $physmap{$id}[1], "\t", $physmap{$id}[2], '+', ($snpsmap{$item}[0]), "\t", $physmap{$id}[3] if (exists $physmap{$id}[1]);
                                 }
                                 print {*STDOUT} "\n";
                             }
@@ -529,8 +540,9 @@ if (defined $haplofile && -r $haplofile && defined $population && -r $population
 else
 {
     print
-      "Usage: $0 --haplotypes <batch_<num>.haplotypes.tsv> --population <popmap.txt>\nDescription: Test for diagnostic alleles or patterns between populations\n\n--haplotypes <file>\n    Raw haplotype file, automaticaly generated by Stacks, and called\n    batch_<num>.haplotypes.tsv.\n\n--population <file>\n    Population file used by Stacks.\n\n--tag <file>\n    batch_<num>.catalog.tags.tsv, required for physical mapping and marker sequences.\n\n--snp <file>\n    batch_<num>.catalog.snps.tsv, required for marker sequences.\n\n--whitelist <file>\n    Text file with the list of marker to only consider.\n\n--min <integer>\n    Minimum number of sample sharing alleles. [default 75%]\n\n--group <file>\n    Grouping [default 0].\n      0 between individuals [all];\n      1 between populations [species];\n      2 between groups of population [group].\n\n--arff <file>\n    Output as an ARFF file format.\n\n--fasta <file>\n    Output as a FASTA file format (SNP only).\n\n--genepop <file>\n    Output as an genepop file format.\n\n--minsnp <integer>\n    Minimum number of SNP. [default 1]\n\n--maxsnp <integer>\n    Maximum number of SNP. [default 2]\n\n--fix\n    Force fixed alleles only.\n\n--fix --fix\n    Force ONE fixed fallele only.\n\n--verbose\n    Becomes very chatty.\n\n";
+      "Usage: $0 --haplotypes <batch_<num>.haplotypes.tsv> --population <popmap.txt>\nDescription: Test for diagnostic alleles or patterns between populations\n\n--haplotypes <file>\n    Raw haplotype file, automaticaly generated by Stacks, and called\n    batch_<num>.haplotypes.tsv.\n--population <file>\n    Population file used by Stacks.\n--tag <file>\n    batch_<num>.catalog.tags.tsv, required for physical mapping and marker sequences.\n--snp <file>\n    batch_<num>.catalog.snps.tsv, required for marker sequences.\n--whitelist <file>\n    Text file with the list of marker to only consider.\n--min <numeric>\n    Minimum ratio of sample sharing alleles (per group). [default 0.75]\n--group <numeric>\n    Diagnostic alleles between [default 0].\n      0 between individuals [none];\n      1 between populations [species];\n      2 between groups of population, (combinations) [group].\n--arff\n    Output as an ARFF file format.\n--fasta\n    Output as a FASTA file format (SNP only).\n--genepop\n    Output as an genepop file format.\n--ade\n    Output as an R/ade file format.\n--minsnp <integer>\n    Minimum number of SNP. [default 1]\n--maxsnp <integer>\n    Maximum number of SNP. [default 2]\n--noN\n    If 'min' is fixed at 0, make sure than no populations as missing genotype.\n--fix\n    Force fixed alleles only.\n--fix --fix\n    Force ONE fixed allele only.\n--verbose\n    Becomes very chatty.\n\n";
 }
 
-#./find_pattern.pl --haplotypes batch_2.haplotypes.tsv --population farmed.txt -v --group 2 -d
+# TODO
+# * add linkage and SNPAssocc
 #./find_pattern.pl --haplotypes tilapia.all.ref/batch_4.haplotypes.tsv --population population.named.txt -v --group 1 -maxsnp 2 -fix -fix --tag tilapia.all.ref/batch_4.catalog.tags.tsv --snp tilapia.all.ref/batch_4.catalog.snps.tsv --vcf=vcf_map.txt --ref=0
